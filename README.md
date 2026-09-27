@@ -27,6 +27,9 @@ Refresh the extension list, open the Anime extensions section, and install
 
 ## Updates
 
+- `0.0.3`: Fixes empty video lists on mobile by using bounded, sequential
+  server requests with OK.ru first; adds API-host failover and a broader
+  relevance-ranked title search without the Trending filter.
 - `0.0.2`: Fixes playback when Mangayomi's built-in MP4Upload or OK.ru
   extractor returns an empty result for Mkissa's current embeds.
 

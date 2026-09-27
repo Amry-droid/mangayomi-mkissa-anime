@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 REPOSITORY = "mangayomi-mkissa-anime"
 SOURCE_ID = 2026092701
-VERSION = "0.0.2"
+VERSION = "0.0.3"
 
 
 def main() -> None:
@@ -41,7 +41,7 @@ def main() -> None:
         "appMinVerReq": "0.5.0",
         "additionalParams": "",
         "sourceCodeLanguage": 1,
-        "notes": "Anime source with complete dates, Sub/Dub/Raw support, Mkissa stream crypto, and direct MP4Upload/OK.ru playback fallbacks.",
+        "notes": "Anime source with complete dates, broader title search, Sub/Dub/Raw support, Mkissa stream crypto, and mobile-safe sequential stream fallbacks.",
     }
     (ROOT / "index.json").write_text(
         json.dumps([source], indent=2, ensure_ascii=False) + "\n",

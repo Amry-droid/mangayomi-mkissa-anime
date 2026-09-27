@@ -12,13 +12,13 @@
     "hasCloudflare": false,
     "sourceCodeUrl": "https://raw.githubusercontent.com/Amry-droid/mangayomi-mkissa-anime/main/mkissa.js",
     "apiUrl": "https://api.mkissa.net/api",
-    "version": "0.0.2",
+    "version": "0.0.3",
     "isManga": false,
     "itemType": 1,
     "isFullData": false,
     "appMinVerReq": "0.5.0",
     "additionalParams": "",
     "sourceCodeLanguage": 1,
-    "notes": "Anime source with complete dates, Sub/Dub/Raw support, Mkissa stream crypto, and direct MP4Upload/OK.ru playback fallbacks."
+    "notes": "Anime source with complete dates, broader title search, Sub/Dub/Raw support, Mkissa stream crypto, and mobile-safe sequential stream fallbacks."
   }
 ]

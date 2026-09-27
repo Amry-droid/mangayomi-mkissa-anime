@@ -17,8 +17,23 @@ class MProvider {
 }
 
 class Client {
+  constructor(options) {
+    this.options = options || {};
+  }
+
+  async request(url, options) {
+    const controller = new AbortController();
+    const seconds = Number(this.options.timeout || 20);
+    const timer = setTimeout(() => controller.abort(), Math.max(1, seconds) * 1000);
+    try {
+      return await fetch(url, Object.assign({}, options, { signal: controller.signal }));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async get(url, headers) {
-    const response = await fetch(url, { headers: headers || {} });
+    const response = await this.request(url, { headers: headers || {} });
     return {
       statusCode: response.status,
       body: await response.text()
@@ -26,7 +41,7 @@ class Client {
   }
 
   async post(url, headers, payload) {
-    const response = await fetch(url, {
+    const response = await this.request(url, {
       method: 'POST',
       headers: headers || {},
       body: typeof payload === 'string' ? payload : JSON.stringify(payload)
@@ -96,9 +111,12 @@ vm.runInContext(source + [
 
 async function probePlayback(videos) {
   for (const video of videos) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
     try {
       const response = await fetch(video.url, {
-        headers: Object.assign({}, video.headers || {}, { Range: 'bytes=0-1023' })
+        headers: Object.assign({}, video.headers || {}, { Range: 'bytes=0-1023' }),
+        signal: controller.signal
       });
       const bytes = Buffer.from(await response.arrayBuffer());
       const contentType = response.headers.get('content-type') || '';
@@ -114,7 +132,10 @@ async function probePlayback(videos) {
           kind: isHls ? 'hls' : 'media'
         };
       }
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      clearTimeout(timer);
+    }
   }
   return null;
 }
@@ -122,6 +143,45 @@ async function probePlayback(videos) {
 async function main() {
   const Extension = context.__MkissaExtension;
   const extension = new Extension();
+
+  const liveClient = extension.client;
+  const failoverAttempts = [];
+  extension.client = {
+    async post(url) {
+      failoverAttempts.push(url);
+      if (/api\.mkissa\.net/i.test(url)) {
+        return {
+          statusCode: 200,
+          body: JSON.stringify({
+            data: { shows: null },
+            errors: [{ message: 'Too many requests' }]
+          })
+        };
+      }
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          data: {
+            shows: {
+              edges: [{
+                _id: 'failover-test',
+                name: 'Fallback Title',
+                englishName: 'Fallback Title',
+                thumbnail: 'https://example.invalid/cover.jpg'
+              }],
+              pageInfo: { total: 1, hasNextPage: false }
+            }
+          }
+        })
+      };
+    }
+  };
+  const failoverSearch = await extension.search('Fallback Title', 1, []);
+  assert.equal(failoverAttempts.length, 2,
+    'search should fail over when the first API host returns null data');
+  assert.equal(failoverSearch.list[0].name, 'Fallback Title',
+    'search should use results from the fallback API host');
+  extension.client = liveClient;
 
   const popular = await extension.getPopular(1);
   assert(popular.list.length >= 10, 'popular list should contain anime');
@@ -131,6 +191,14 @@ async function main() {
   const search = await extension.search('One Piece', 1, []);
   assert(search.list.some((item) => /one piece/i.test(item.name)),
     'search should find One Piece');
+  assert(/one piece/i.test(search.list[0].name),
+    'exact title match should be ranked first');
+
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+  const alternateSearch = await extension.search('Boku no Hero Academia', 1, []);
+  assert(alternateSearch.list.some((item) =>
+    /my hero academia|boku no hero academia/i.test(item.name)),
+  'search should find anime by a common alternate title');
 
   const current = await extension.getDetail(
     'https://mkissa.to/anime/cDLX8Rte8LBSNTZno'
@@ -161,7 +229,9 @@ async function main() {
     return { name: item && item.sourceName, host };
   }));
   const supportedSource = sources.find((item) =>
-    item && /mp4upload|ok\.ru|bysekoze|filemoon/i.test(item.sourceUrl || '')
+    item && /ok\.ru/i.test(item.sourceUrl || '')
+  ) || sources.find((item) =>
+    item && /mp4upload|bysekoze|filemoon/i.test(item.sourceUrl || '')
   );
   assert(supportedSource, 'live response should contain a Mangayomi-supported host');
   const routedVideos = await extension.extractedVideos(supportedSource, 'sub');
@@ -217,7 +287,9 @@ async function main() {
 
   console.log(JSON.stringify({
     popular: popular.list.length,
+    apiFailoverAttempts: failoverAttempts.length,
     search: search.list.length,
+    alternateSearch: alternateSearch.list.length,
     currentEpisodes: current.chapters.length,
     onePieceEpisodes: onePiece.chapters.length,
     datedOnePieceEpisodes: dated.length,

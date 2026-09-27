@@ -7,7 +7,6 @@ const API_URLS = [
     'https://api.mkissa.net/api',
     'https://api.allanime.day/api'
 ];
-const API_URL = API_URLS[0];
 const CLOCK_BASE = 'https://allanime.day';
 
 const KEYGEN_URLS = [
@@ -68,7 +67,7 @@ const CDN_BASES = ['https://mkissa.to', 'https://allmanga.to'];
 
 let aaKeyCache = { keys: null, ts: 0 };
 
-if (typeof console !== 'undefined') console.log('allmanga module v1.11.1 (build 175 keygen, k7 episode lane)');
+if (typeof console !== 'undefined') console.log('allmanga module v1.11.2 (build 175 keygen, k7 episode lane)');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -84,6 +83,14 @@ const STREAM_HEADERS = {
     'Referer': 'https://allanimenews.com/',
     'Origin': 'https://allanimenews.com',
     'User-Agent': UA
+};
+
+// Mangayomi's HTTP bridge otherwise allows a stalled embed host to hold the
+// whole JavaScript call for roughly a minute. Keep every network hop bounded
+// so the extension can move on to the next API/server on mobile networks.
+const HTTP_OPTIONS = {
+    timeout: 18,
+    connectTimeout: 10
 };
 
 /* MAIN FUNCTIONS */
@@ -1258,7 +1265,7 @@ async function soraFetch(url, options) {
     const headers = opts.headers || {};
     const body = typeof opts.body === 'undefined' ? null : opts.body;
     try {
-        const client = new Client();
+        const client = new Client(HTTP_OPTIONS);
         let response;
         if (String(method).toUpperCase() === 'POST') {
             let payload = body;
@@ -1428,7 +1435,7 @@ async function aaGetEpisodeParsed(showId, episode, translationType) {
 class DefaultExtension extends MProvider {
     constructor() {
         super();
-        this.client = new Client();
+        this.client = new Client(HTTP_OPTIONS);
     }
 
     apiHeaders() {
@@ -1449,20 +1456,38 @@ class DefaultExtension extends MProvider {
     }
 
     async graphql(query, variables) {
-        const response = await this.client.post(API_URL, this.apiHeaders(), {
-            query: query,
-            variables: variables || {}
-        });
-        if (!response || Number(response.statusCode || 0) >= 400) {
-            throw new Error('Mkissa API HTTP ' + (response ? response.statusCode : 'failure'));
+        let lastError = 'Mkissa API failure';
+        const payload = { query: query, variables: variables || {} };
+        for (let i = 0; i < API_URLS.length; i++) {
+            const apiUrl = API_URLS[i];
+            try {
+                const response = await this.client.post(apiUrl, this.apiHeaders(), payload);
+                if (!response || Number(response.statusCode || 0) >= 400) {
+                    lastError = 'Mkissa API HTTP ' +
+                        (response ? response.statusCode : 'failure') + ' on ' + apiUrl;
+                    continue;
+                }
+                const json = JSON.parse(response.body || '{}');
+                // GraphQL can return useful data together with a warning. Use
+                // that data, but fail over when the requested root field is
+                // null (the API's rate-limit response has that exact shape).
+                const data = json && json.data;
+                const hasUsefulData = data && Object.keys(data).some(function(key) {
+                    return data[key] !== null && data[key] !== undefined;
+                });
+                if (hasUsefulData) return data;
+                if (json.errors && json.errors.length) {
+                    lastError = json.errors.map(function(item) {
+                        return item.message || 'GraphQL error';
+                    }).join(' · ');
+                    continue;
+                }
+                lastError = 'Mkissa API returned no data on ' + apiUrl;
+            } catch (error) {
+                lastError = String(error);
+            }
         }
-        const json = JSON.parse(response.body || '{}');
-        if (json.errors && json.errors.length) {
-            throw new Error(json.errors.map(function(item) {
-                return item.message || 'GraphQL error';
-            }).join(' · '));
-        }
-        return json.data || {};
+        throw new Error(lastError);
     }
 
     getPreference(key, fallback) {
@@ -1531,8 +1556,68 @@ class DefaultExtension extends MProvider {
     }
 
     async search(query, page, filters) {
-        if (!query || !String(query).trim()) return await this.getPopular(page);
-        return await this.listing('Trending', page, query);
+        const text = String(query || '').trim();
+        if (!text) return await this.getPopular(page);
+        const gqlQuery = `
+            query($search: SearchInput, $limit: Int, $page: Int) {
+                shows(search: $search, limit: $limit, page: $page) {
+                    pageInfo { total totalPages page hasNextPage }
+                    edges {
+                        _id name englishName nativeName altNames trustedAltNames
+                        thumbnail banner availableEpisodes status
+                    }
+                }
+            }`;
+        const pageNumber = Math.max(1, Number(page) || 1);
+        // Do not apply Trending here. The website's own search route sends a
+        // plain title query; a popularity sort can bury exact/alternate names.
+        const data = await this.graphql(gqlQuery, {
+            search: {
+                query: text,
+                allowAdult: false,
+                allowUnknown: true,
+                fromSearch: true
+            },
+            limit: 30,
+            page: pageNumber
+        });
+        const shows = data.shows || {};
+        const self = this;
+        const normalizedQuery = this.normalizeTitle(text);
+        const edges = (shows.edges || []).filter(function(item) {
+            return item && item._id;
+        });
+        edges.sort(function(a, b) {
+            return self.searchRank(a, normalizedQuery) - self.searchRank(b, normalizedQuery);
+        });
+        const list = edges.map(this.card.bind(this));
+        const info = shows.pageInfo || {};
+        let hasNextPage = info.hasNextPage;
+        if (hasNextPage === undefined || hasNextPage === null) {
+            hasNextPage = pageNumber * 30 < Number(info.total || 0);
+        }
+        return { list: list, hasNextPage: Boolean(hasNextPage && list.length) };
+    }
+
+    normalizeTitle(value) {
+        return String(value || '').toLowerCase()
+            .replace(/[^a-z0-9]+/g, ' ')
+            .replace(/^\s+|\s+$/g, '')
+            .replace(/\s+/g, ' ');
+    }
+
+    searchRank(item, normalizedQuery) {
+        const names = [item.englishName, item.name, item.nativeName]
+            .concat(item.altNames || [], item.trustedAltNames || [])
+            .map(this.normalizeTitle.bind(this))
+            .filter(function(value) { return Boolean(value); });
+        if (names.some(function(value) { return value === normalizedQuery; })) return 0;
+        if (names.some(function(value) { return value.indexOf(normalizedQuery) === 0; })) return 1;
+        if (names.some(function(value) {
+            return (' ' + value + ' ').indexOf(' ' + normalizedQuery + ' ') >= 0;
+        })) return 2;
+        if (names.some(function(value) { return value.indexOf(normalizedQuery) >= 0; })) return 3;
+        return 4;
     }
 
     getFilterList() {
@@ -1784,33 +1869,28 @@ class DefaultExtension extends MProvider {
                 const parsed = await aaGetEpisodeParsed(episode.showId, episode.episode, type);
                 const sources = parsed && parsed.episode ? parsed.episode.sourceUrls || [] : [];
                 const videos = [];
-                // Resolve the two currently verified hosts together. Mkissa
-                // often puts a dead SPA embed first, which previously delayed
-                // playback before the useful MP4Upload/OK.ru entries ran.
-                const primary = sources.filter(function(source) {
+                // Mangayomi's QuickJS HTTP bridge is much more reliable with
+                // one outstanding request at a time. OK.ru currently exposes
+                // a valid HLS manifest while MP4Upload can stall, so resolve
+                // servers sequentially in verified order and return the first
+                // playable result instead of waiting for every host.
+                const rankedSources = sources.map(function(source, index) {
                     const sourceUrl = source && source.sourceUrl || '';
-                    return /mp4upload|ok\.ru/i.test(sourceUrl);
+                    let rank = 5;
+                    if (/ok\.ru/i.test(sourceUrl)) rank = 0;
+                    else if (sourceUrl.indexOf('--') === 0) rank = 1;
+                    else if (/\.(?:m3u8|mp4)(?:[?#]|$)/i.test(sourceUrl)) rank = 2;
+                    else if (/mp4upload/i.test(sourceUrl)) rank = 3;
+                    else if (/filemoon|bysekoze|streamwish|wishfast/i.test(sourceUrl)) rank = 4;
+                    return { source: source, index: index, rank: rank };
+                }).sort(function(a, b) {
+                    return a.rank - b.rank || a.index - b.index;
                 });
-                const self = this;
-                const primaryGroups = await Promise.all(primary.map(function(source) {
-                    return self.extractedVideos(source, type).catch(function(error) {
-                        console.log('Mkissa primary server failed: ' + error);
-                        return [];
-                    });
-                }));
-                primaryGroups.forEach(function(group) {
-                    self.appendVideos(videos, group, '', '');
-                });
-                if (videos.length) return videos;
-
-                for (let j = 0; j < sources.length; j++) {
-                    const sourceUrl = sources[j] && sources[j].sourceUrl || '';
-                    if (/mp4upload|ok\.ru/i.test(sourceUrl)) continue;
-                    const extracted = await this.extractedVideos(sources[j], type);
+                for (let j = 0; j < rankedSources.length; j++) {
+                    const extracted = await this.extractedVideos(rankedSources[j].source, type);
                     this.appendVideos(videos, extracted, '', '');
                     if (videos.length) return videos;
                 }
-                if (videos.length) return videos;
             } catch (error) {
                 console.log('Mkissa ' + type + ' stream request failed: ' + error);
             }
