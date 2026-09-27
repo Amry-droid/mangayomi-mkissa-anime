@@ -68,7 +68,7 @@ const CDN_BASES = ['https://mkissa.to', 'https://allmanga.to'];
 
 let aaKeyCache = { keys: null, ts: 0 };
 
-if (typeof console !== 'undefined') console.log('allmanga module v1.11.0 (build 175 keygen, k7 episode lane)');
+if (typeof console !== 'undefined') console.log('allmanga module v1.11.1 (build 175 keygen, k7 episode lane)');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -787,23 +787,27 @@ async function resolveOkRu(embedUrl, sourceName, tt) {
     }
     const flashvars = opts && opts.flashvars;
     if (!flashvars || !flashvars.metadata) return null;
-    let meta = null;
-    try {
-        meta = JSON.parse(flashvars.metadata);
-    } catch (e) {
-        return null;
+    let meta = flashvars.metadata;
+    if (typeof meta === 'string') {
+        try {
+            meta = JSON.parse(meta);
+        } catch (e) {
+            return null;
+        }
     }
-    const movie = meta && meta.movie;
-    if (!movie) return null;
-    let url = movie.ondemandHls || '';
-    if (!url && movie.videos && movie.videos.length && movie.videos[0].url) {
-        url = movie.videos[0].url;
-    }
+    if (!meta || typeof meta !== 'object') return null;
+    const movie = meta.movie || {};
+    const videos = meta.videos || movie.videos || [];
+    // OK.ru moved hlsManifestUrl from movie to the metadata root. Mangayomi's
+    // built-in extractor still looks for the old ondemandHls field and returns
+    // an empty list for current embeds, so prefer the live root field here.
+    let url = meta.hlsManifestUrl || meta.ondemandHls || movie.ondemandHls || '';
+    if (!url && videos.length && videos[0].url) url = videos[0].url;
     if (!url || !/^https?:\/\//i.test(url)) return null;
     return {
         title: tt.toUpperCase() + ' ' + (sourceName || 'Ok'),
         streamUrl: url,
-        headers: { 'Referer': embedUrl, 'User-Agent': UA }
+        headers: { 'Referer': embedUrl, 'Origin': 'https://ok.ru', 'User-Agent': UA }
     };
 }
 
@@ -820,7 +824,7 @@ async function resolveMp4Upload(embedUrl, sourceName, tt) {
     return {
         title: tt.toUpperCase() + ' ' + (sourceName || 'Mp4Upload'),
         streamUrl: m[1],
-        headers: { 'Referer': embedUrl, 'Origin': 'https://www.mp4upload.com', 'User-Agent': UA }
+        headers: { 'Referer': embedUrl, 'Origin': 'https://mp4upload.com', 'User-Agent': UA }
     };
 }
 
@@ -1685,11 +1689,14 @@ class DefaultExtension extends MProvider {
             if (subtitle && !tracks.some(function(track) { return track && track.file === subtitle; })) {
                 tracks.push({ file: subtitle, label: 'English' });
             }
+            const itemQuality = item.quality || item.title || 'Auto';
+            const quality = prefix && String(itemQuality).toLowerCase().indexOf(
+                String(prefix).toLowerCase()
+            ) !== 0 ? prefix + ' · ' + itemQuality : itemQuality;
             target.push({
                 url: streamUrl,
                 originalUrl: item.originalUrl || streamUrl,
-                quality: (prefix ? prefix + ' · ' : '') +
-                    (item.quality || item.title || 'Auto'),
+                quality: quality,
                 headers: item.headers || self.streamHeaders(),
                 subtitles: tracks
             });
@@ -1709,16 +1716,29 @@ class DefaultExtension extends MProvider {
         if (!/^https?:\/\//i.test(url)) return videos;
         try {
             let extracted = [];
-            if (/gogo|playtaku|vidstreaming|embtaku/i.test(url) &&
+            if (/mp4upload/i.test(url)) {
+                // The current Mangayomi Mp4Upload bridge has a script-unpack
+                // regression. Resolve the plain player.src payload ourselves,
+                // then keep the bridge as a future-compatible fallback.
+                const direct = await resolveMp4Upload(url, source.sourceName, translationType);
+                if (direct && direct.streamUrl) extracted = [direct];
+                if (!extracted.length && typeof mp4UploadExtractor === 'function') {
+                    extracted = await mp4UploadExtractor(url, {}, label + ' ', '');
+                }
+            } else if (/ok\.ru/i.test(url)) {
+                // Current OK.ru embeds expose hlsManifestUrl at the metadata
+                // root, while Mangayomi's bridge still expects ondemandHls.
+                const direct = await resolveOkRu(url, source.sourceName, translationType);
+                if (direct && direct.streamUrl) extracted = [direct];
+                if (!extracted.length && typeof okruExtractor === 'function') {
+                    extracted = await okruExtractor(url);
+                }
+            } else if (/gogo|playtaku|vidstreaming|embtaku/i.test(url) &&
                 typeof gogoCdnExtractor === 'function') {
                 extracted = await gogoCdnExtractor(url);
             } else if (/dood\.|doodstream|doodwatch/i.test(url) &&
                 typeof doodExtractor === 'function') {
                 extracted = await doodExtractor(url, label);
-            } else if (/ok\.ru/i.test(url) && typeof okruExtractor === 'function') {
-                extracted = await okruExtractor(url);
-            } else if (/mp4upload/i.test(url) && typeof mp4UploadExtractor === 'function') {
-                extracted = await mp4UploadExtractor(url);
             } else if (/streamlare/i.test(url) && typeof streamlareExtractor === 'function') {
                 extracted = await streamlareExtractor(url, label + ' ');
             } else if (/filemoon|bysekoze/i.test(url) &&
@@ -1739,6 +1759,14 @@ class DefaultExtension extends MProvider {
                     translationType);
                 if (generic && generic.streamUrl) extracted = [generic];
             }
+            // A bridge may exist yet return [] when its host changes. Do not
+            // treat that as a successful resolution; try the local parser.
+            if ((!Array.isArray(extracted) || !extracted.length) &&
+                !/mp4upload|ok\.ru/i.test(url)) {
+                const fallback = await resolveIframeSource(url,
+                    source.sourceName || 'Server', translationType);
+                if (fallback && fallback.streamUrl) extracted = [fallback];
+            }
             this.appendVideos(videos, extracted, label, '');
         } catch (error) {
             console.log('Mkissa extractor failed for ' + url + ': ' + error);
@@ -1756,9 +1784,31 @@ class DefaultExtension extends MProvider {
                 const parsed = await aaGetEpisodeParsed(episode.showId, episode.episode, type);
                 const sources = parsed && parsed.episode ? parsed.episode.sourceUrls || [] : [];
                 const videos = [];
+                // Resolve the two currently verified hosts together. Mkissa
+                // often puts a dead SPA embed first, which previously delayed
+                // playback before the useful MP4Upload/OK.ru entries ran.
+                const primary = sources.filter(function(source) {
+                    const sourceUrl = source && source.sourceUrl || '';
+                    return /mp4upload|ok\.ru/i.test(sourceUrl);
+                });
+                const self = this;
+                const primaryGroups = await Promise.all(primary.map(function(source) {
+                    return self.extractedVideos(source, type).catch(function(error) {
+                        console.log('Mkissa primary server failed: ' + error);
+                        return [];
+                    });
+                }));
+                primaryGroups.forEach(function(group) {
+                    self.appendVideos(videos, group, '', '');
+                });
+                if (videos.length) return videos;
+
                 for (let j = 0; j < sources.length; j++) {
+                    const sourceUrl = sources[j] && sources[j].sourceUrl || '';
+                    if (/mp4upload|ok\.ru/i.test(sourceUrl)) continue;
                     const extracted = await this.extractedVideos(sources[j], type);
                     this.appendVideos(videos, extracted, '', '');
+                    if (videos.length) return videos;
                 }
                 if (videos.length) return videos;
             } catch (error) {
@@ -1781,4 +1831,3 @@ class DefaultExtension extends MProvider {
         }];
     }
 }
-

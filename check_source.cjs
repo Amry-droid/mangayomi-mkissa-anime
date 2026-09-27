@@ -74,21 +74,11 @@ const context = {
   MProvider,
   Client,
   SharedPreferences,
-  mp4UploadExtractor: async (url) => [{
-    url: 'https://media.invalid/mp4upload.mp4',
-    originalUrl: url,
-    quality: 'MP4Upload'
-  }],
-  okruExtractor: async (url) => [{
-    url: 'https://media.invalid/okru.m3u8',
-    originalUrl: url,
-    quality: 'OK.ru'
-  }],
-  filemoonExtractor: async (url) => [{
-    url: 'https://media.invalid/filemoon.m3u8',
-    originalUrl: url,
-    quality: 'FileMoon'
-  }],
+  // Mirror the current bridge regression: these host extractors may exist but
+  // return an empty list. Mkissa must still resolve a playable URL itself.
+  mp4UploadExtractor: async () => [],
+  okruExtractor: async () => [],
+  filemoonExtractor: async () => [],
   setTimeout,
   clearTimeout
 };
@@ -103,6 +93,31 @@ vm.runInContext(source + [
   'globalThis.__aaAscii = aaAscii;',
   'globalThis.__aaUtf8ToStr = aaUtf8ToStr;'
 ].join('\n'), context, { filename: sourcePath });
+
+async function probePlayback(videos) {
+  for (const video of videos) {
+    try {
+      const response = await fetch(video.url, {
+        headers: Object.assign({}, video.headers || {}, { Range: 'bytes=0-1023' })
+      });
+      const bytes = Buffer.from(await response.arrayBuffer());
+      const contentType = response.headers.get('content-type') || '';
+      const textHead = bytes.subarray(0, 64).toString('utf8');
+      const isHls = textHead.includes('#EXTM3U');
+      const isMedia = bytes.length > 16 && !/^\s*<(?:!doctype|html)/i.test(textHead);
+      if (response.ok && (isHls || isMedia)) {
+        return {
+          quality: video.quality,
+          status: response.status,
+          contentType,
+          bytes: bytes.length,
+          kind: isHls ? 'hls' : 'media'
+        };
+      }
+    } catch (_) {}
+  }
+  return null;
+}
 
 async function main() {
   const Extension = context.__MkissaExtension;
@@ -139,13 +154,44 @@ async function main() {
   const sources = parsed && parsed.episode && parsed.episode.sourceUrls;
   assert(Array.isArray(sources) && sources.length > 0,
     'encrypted episode handshake should return stream sources');
+  console.log('Live source inventory:', sources.map((item) => {
+    var sourceUrl = item && item.sourceUrl || '';
+    var host = sourceUrl.indexOf('--') === 0 ? 'clock' : '';
+    try { if (!host) host = new URL(sourceUrl).host; } catch (_) {}
+    return { name: item && item.sourceName, host };
+  }));
   const supportedSource = sources.find((item) =>
     item && /mp4upload|ok\.ru|bysekoze|filemoon/i.test(item.sourceUrl || '')
   );
   assert(supportedSource, 'live response should contain a Mangayomi-supported host');
   const routedVideos = await extension.extractedVideos(supportedSource, 'sub');
   assert(routedVideos.length > 0,
-    'live server should be routed to Mangayomi built-in extractors');
+    'live server should resolve even when Mangayomi built-in extractors return empty');
+  const okSource = sources.find((item) => item && /ok\.ru/i.test(item.sourceUrl || ''));
+  assert(okSource, 'live response should contain an OK.ru fallback');
+  const okVideos = await extension.extractedVideos(okSource, 'sub');
+  const okPlaybackProof = await probePlayback(okVideos);
+  assert(okPlaybackProof && okPlaybackProof.kind === 'hls',
+    'OK.ru fallback should return a live HLS playlist');
+
+  const liveVideos = await extension.getVideoList(
+    'https://mkissa.to/anime/cDLX8Rte8LBSNTZno/1?types=sub'
+  );
+  assert(liveVideos.length > 0, 'getVideoList should return live stream URLs');
+  assert(liveVideos.every((video) => /^https?:\/\//.test(video.url || '')),
+    'every returned video should have an absolute URL');
+
+  const playbackProof = await probePlayback(liveVideos);
+  assert(playbackProof, 'at least one returned stream must serve real media bytes');
+
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  const onePieceEpisodeOne = onePiece.chapters[onePiece.chapters.length - 1];
+  assert(onePieceEpisodeOne && /\/1(?:\?|$)/.test(onePieceEpisodeOne.url),
+    'long-running show should include episode 1');
+  const onePieceVideos = await extension.getVideoList(onePieceEpisodeOne.url);
+  const onePiecePlaybackProof = await probePlayback(onePieceVideos);
+  assert(onePiecePlaybackProof,
+    'a second anime should also resolve to real media bytes');
 
   const key = crypto.randomBytes(32);
   const iv = crypto.randomBytes(12);
@@ -176,7 +222,12 @@ async function main() {
     onePieceEpisodes: onePiece.chapters.length,
     datedOnePieceEpisodes: dated.length,
     streamSources: sources.length,
-    routedStreams: routedVideos.length
+    routedStreams: routedVideos.length,
+    liveVideos: liveVideos.length,
+    playbackProof,
+    okPlaybackProof,
+    onePieceLiveVideos: onePieceVideos.length,
+    onePiecePlaybackProof
   }, null, 2));
   console.log('Mkissa source: catalog, full dates, crypto, and streams passed');
 }

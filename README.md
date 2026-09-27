@@ -23,6 +23,12 @@ Refresh the extension list, open the Anime extensions section, and install
 - Mkissa's encrypted rotating stream handshake
 - Mangayomi extractors for MP4Upload, OK.ru, FileMoon, StreamWish, Dood,
   Streamlare, and Gogo-style hosts
+- Built-in MP4Upload and OK.ru fallbacks verified against real media bytes
+
+## Updates
+
+- `0.0.2`: Fixes playback when Mangayomi's built-in MP4Upload or OK.ru
+  extractor returns an empty result for Mkissa's current embeds.
 
 ## Validation
 
