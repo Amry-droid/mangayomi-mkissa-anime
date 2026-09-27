@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 REPOSITORY = "mangayomi-mkissa-anime"
 SOURCE_ID = 2026092701
-VERSION = "0.0.3"
+VERSION = "0.0.4"
 
 
 def main() -> None:
@@ -32,16 +32,19 @@ def main() -> None:
         "dateFormatLocale": "",
         "isNsfw": False,
         "hasCloudflare": False,
-        "sourceCodeUrl": f"{raw}/mkissa.js",
+        # Version the raw URL as well as the catalogue entry. This prevents a
+        # freshly updated iPhone from receiving an older cached main-branch
+        # source while Mangayomi already records the new extension version.
+        "sourceCodeUrl": f"{raw}/mkissa.js?v={VERSION}",
         "apiUrl": "https://api.mkissa.net/api",
         "version": VERSION,
         "isManga": False,
         "itemType": 1,
         "isFullData": False,
-        "appMinVerReq": "0.5.0",
+        "appMinVerReq": "0.9.0",
         "additionalParams": "",
         "sourceCodeLanguage": 1,
-        "notes": "Anime source with complete dates, broader title search, Sub/Dub/Raw support, Mkissa stream crypto, and mobile-safe sequential stream fallbacks.",
+        "notes": "Anime source with complete dates and broader search. v0.0.4 uses Mangayomi's iOS-safe Dart HTTP path, races working video hosts, and reports host failures instead of an empty list.",
     }
     (ROOT / "index.json").write_text(
         json.dumps([source], indent=2, ensure_ascii=False) + "\n",

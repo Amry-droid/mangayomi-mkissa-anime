@@ -27,6 +27,11 @@ Refresh the extension list, open the Anime extensions section, and install
 
 ## Updates
 
+- `0.0.4`: Uses Mangayomi's Dart HTTP path for iOS stream hosts and races
+  OK.ru against MP4Upload, returning the first working video. If every host is
+  unreachable, Mangayomi now shows the attempted hosts instead of the generic
+  `Video list is empty` message. The versioned source URL also avoids a stale
+  raw-file cache immediately after an update.
 - `0.0.3`: Fixes empty video lists on mobile by using bounded, sequential
   server requests with OK.ru first; adds API-host failover and a broader
   relevance-ranked title search without the Trending filter.

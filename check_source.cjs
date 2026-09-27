@@ -102,6 +102,7 @@ vm.runInContext(source + [
   '',
   'globalThis.__MkissaExtension = DefaultExtension;',
   'globalThis.__aaGetEpisodeParsed = aaGetEpisodeParsed;',
+  'globalThis.__aaRaceSuccess = aaRaceSuccess;',
   'globalThis.__aaGcmSeal = aaGcmSeal;',
   'globalThis.__aaGcmOpen = aaGcmOpen;',
   'globalThis.__aaHexToBytes = aaHexToBytes;',
@@ -143,6 +144,22 @@ async function probePlayback(videos) {
 async function main() {
   const Extension = context.__MkissaExtension;
   const extension = new Extension();
+  assert.equal(extension.client.options.useDartHttpClient, true,
+    'Mangayomi requests should use the iOS-safe Dart HTTP client');
+
+  const raced = await context.__aaRaceSuccess([
+    Promise.resolve({
+      streams: [{
+        url: 'https://media.invalid/first.m3u8',
+        originalUrl: 'https://media.invalid/first.m3u8',
+        quality: 'First success'
+      }],
+      subtitle: ''
+    }),
+    new Promise(() => {})
+  ]);
+  assert.equal(raced.streams.length, 1,
+    'the first working host should return without waiting for a stalled host');
 
   const liveClient = extension.client;
   const failoverAttempts = [];

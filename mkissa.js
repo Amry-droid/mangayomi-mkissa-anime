@@ -67,7 +67,7 @@ const CDN_BASES = ['https://mkissa.to', 'https://allmanga.to'];
 
 let aaKeyCache = { keys: null, ts: 0 };
 
-if (typeof console !== 'undefined') console.log('allmanga module v1.11.2 (build 175 keygen, k7 episode lane)');
+if (typeof console !== 'undefined') console.log('allmanga module v1.11.3 (build 175 keygen, k7 episode lane)');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -90,7 +90,11 @@ const STREAM_HEADERS = {
 // so the extension can move on to the next API/server on mobile networks.
 const HTTP_OPTIONS = {
     timeout: 18,
-    connectTimeout: 10
+    connectTimeout: 10,
+    // Mangayomi's own OK.ru/MP4Upload extractors use the Dart HTTP client.
+    // Match that path because the Rust client can return no embed response on
+    // iOS even while catalog/API requests continue to work normally.
+    useDartHttpClient: true
 };
 
 /* MAIN FUNCTIONS */
@@ -1763,6 +1767,14 @@ class DefaultExtension extends MProvider {
         return order.filter(function(type) { return present.indexOf(type) >= 0; });
     }
 
+    sourceLabel(source) {
+        const name = source && source.sourceName || 'Server';
+        const raw = source && source.sourceUrl || '';
+        if (raw.indexOf('--') === 0) return name + ' (clock)';
+        const match = raw.match(/^https?:\/\/([^\/?#]+)/i);
+        return name + ' (' + (match ? match[1] : 'unknown host') + ')';
+    }
+
     appendVideos(target, items, prefix, subtitle) {
         if (!Array.isArray(items)) return;
         const self = this;
@@ -1863,17 +1875,12 @@ class DefaultExtension extends MProvider {
         const episode = this.episodeFromUrl(url);
         if (!episode) return [];
         const translations = this.audioOrder(episode.types);
+        const attempted = [];
         for (let i = 0; i < translations.length; i++) {
             const type = translations[i];
             try {
                 const parsed = await aaGetEpisodeParsed(episode.showId, episode.episode, type);
                 const sources = parsed && parsed.episode ? parsed.episode.sourceUrls || [] : [];
-                const videos = [];
-                // Mangayomi's QuickJS HTTP bridge is much more reliable with
-                // one outstanding request at a time. OK.ru currently exposes
-                // a valid HLS manifest while MP4Upload can stall, so resolve
-                // servers sequentially in verified order and return the first
-                // playable result instead of waiting for every host.
                 const rankedSources = sources.map(function(source, index) {
                     const sourceUrl = source && source.sourceUrl || '';
                     let rank = 5;
@@ -1886,16 +1893,58 @@ class DefaultExtension extends MProvider {
                 }).sort(function(a, b) {
                     return a.rank - b.rank || a.index - b.index;
                 });
-                for (let j = 0; j < rankedSources.length; j++) {
-                    const extracted = await this.extractedVideos(rankedSources[j].source, type);
-                    this.appendVideos(videos, extracted, '', '');
-                    if (videos.length) return videos;
+
+                const self = this;
+                rankedSources.forEach(function(entry) {
+                    const label = type.toUpperCase() + ' ' + self.sourceLabel(entry.source);
+                    if (attempted.indexOf(label) < 0) attempted.push(label);
+                });
+
+                // OK.ru and MP4Upload are Mkissa's two currently verified
+                // servers. Start both together and return as soon as either
+                // resolves. Waiting for them serially made a blocked OK.ru
+                // request delay MP4Upload long enough for mobile playback to
+                // end as an empty list; Promise.all had the opposite problem
+                // and waited for every stalled host.
+                const primary = rankedSources.filter(function(entry) {
+                    return entry.rank === 0 || entry.rank === 2 || entry.rank === 3;
+                });
+                const primaryResult = await aaRaceSuccess(primary.map(function(entry) {
+                    return self.extractedVideos(entry.source, type).then(function(videos) {
+                        return { streams: videos, subtitle: '' };
+                    });
+                }));
+                if (primaryResult.streams.length) return primaryResult.streams;
+
+                // Less reliable Mkissa servers are still useful as a second
+                // chance, but race them too so one dead iframe cannot hold the
+                // entire QuickJS call open on iOS.
+                const fallback = rankedSources.filter(function(entry) {
+                    return primary.indexOf(entry) < 0;
+                });
+                const fallbackResult = await aaRaceSuccess(fallback.map(function(entry) {
+                    return self.extractedVideos(entry.source, type).then(function(videos) {
+                        return { streams: videos, subtitle: '' };
+                    });
+                }));
+                if (fallbackResult.streams.length) return fallbackResult.streams;
+
+                if (!sources.length) {
+                    const noSources = type.toUpperCase() + ' (Mkissa returned no servers)';
+                    if (attempted.indexOf(noSources) < 0) attempted.push(noSources);
                 }
             } catch (error) {
                 console.log('Mkissa ' + type + ' stream request failed: ' + error);
+                const failure = type.toUpperCase() + ' request: ' + String(error);
+                if (attempted.indexOf(failure) < 0) attempted.push(failure);
             }
         }
-        return [];
+        // Mangayomi v0.9+ surfaces thrown source errors. Do not collapse a
+        // host/network failure into its generic and misleading empty-list UI.
+        throw new Error(
+            'Mkissa could not reach a playable server for episode ' + episode.episode +
+            '. Tried: ' + (attempted.length ? attempted.join(', ') : 'no servers')
+        );
     }
 
     getSourcePreferences() {
