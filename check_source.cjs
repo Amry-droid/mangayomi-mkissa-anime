@@ -103,6 +103,10 @@ vm.runInContext(source + [
   'globalThis.__MkissaExtension = DefaultExtension;',
   'globalThis.__aaGetEpisodeParsed = aaGetEpisodeParsed;',
   'globalThis.__aaRaceSuccess = aaRaceSuccess;',
+  'globalThis.__getAaEpisodeQuery = function() { return aaEpisodeQuery; };',
+  'globalThis.__setAaEpisodeQuery = function(fn) { aaEpisodeQuery = fn; };',
+  'globalThis.__getAaParseEpisodeResponse = function() { return aaParseEpisodeResponse; };',
+  'globalThis.__setAaParseEpisodeResponse = function(fn) { aaParseEpisodeResponse = fn; };',
   'globalThis.__aaGcmSeal = aaGcmSeal;',
   'globalThis.__aaGcmOpen = aaGcmOpen;',
   'globalThis.__aaHexToBytes = aaHexToBytes;',
@@ -146,6 +150,28 @@ async function main() {
   const extension = new Extension();
   assert.equal(extension.client.options.useDartHttpClient, true,
     'Mangayomi requests should use the iOS-safe Dart HTTP client');
+  assert.deepEqual(Array.from(extension.audioOrder(['sub'])), ['sub', 'dub', 'raw'],
+    'an empty advertised audio must fall back to the other audio variants');
+
+  const originalEpisodeQuery = context.__getAaEpisodeQuery();
+  const originalEpisodeParser = context.__getAaParseEpisodeResponse();
+  const mirrorCalls = [];
+  context.__setAaEpisodeQuery(async function(keys, showId, type, episode, hosts) {
+    mirrorCalls.push(hosts ? Array.from(hosts) : null);
+    return { marker: hosts ? 'alternate' : 'primary' };
+  });
+  context.__setAaParseEpisodeResponse(function(response) {
+    return response && response.marker === 'alternate'
+      ? { episode: { sourceUrls: [{ sourceName: 'Backup', sourceUrl: 'https://media.invalid/video.mp4' }] } }
+      : { episode: { sourceUrls: [] } };
+  });
+  const mirrorParsed = await context.__aaGetEpisodeParsed('show', '24', 'sub');
+  assert.equal(mirrorCalls.length, 2,
+    'an empty primary response should retry the alternate Mkissa mirror');
+  assert.equal(mirrorParsed.episode.sourceUrls.length, 1,
+    'the alternate mirror should supply the playable server list');
+  context.__setAaEpisodeQuery(originalEpisodeQuery);
+  context.__setAaParseEpisodeResponse(originalEpisodeParser);
 
   const raced = await context.__aaRaceSuccess([
     Promise.resolve({

@@ -10,15 +10,15 @@
     "dateFormatLocale": "",
     "isNsfw": false,
     "hasCloudflare": false,
-    "sourceCodeUrl": "https://raw.githubusercontent.com/Amry-droid/mangayomi-mkissa-anime/main/mkissa.js?v=0.0.4",
+    "sourceCodeUrl": "https://raw.githubusercontent.com/Amry-droid/mangayomi-mkissa-anime/main/mkissa.js?v=0.0.5",
     "apiUrl": "https://api.mkissa.net/api",
-    "version": "0.0.4",
+    "version": "0.0.5",
     "isManga": false,
     "itemType": 1,
     "isFullData": false,
     "appMinVerReq": "0.9.0",
     "additionalParams": "",
     "sourceCodeLanguage": 1,
-    "notes": "Anime source with complete dates and broader search. v0.0.4 uses Mangayomi's iOS-safe Dart HTTP path, races working video hosts, and reports host failures instead of an empty list."
+    "notes": "Anime source with complete dates and broader search. v0.0.5 retries the alternate Mkissa API mirror and other audio variants when an episode is advertised but returns no servers."
   }
 ]

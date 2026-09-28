@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 REPOSITORY = "mangayomi-mkissa-anime"
 SOURCE_ID = 2026092701
-VERSION = "0.0.4"
+VERSION = "0.0.5"
 
 
 def main() -> None:
@@ -44,7 +44,7 @@ def main() -> None:
         "appMinVerReq": "0.9.0",
         "additionalParams": "",
         "sourceCodeLanguage": 1,
-        "notes": "Anime source with complete dates and broader search. v0.0.4 uses Mangayomi's iOS-safe Dart HTTP path, races working video hosts, and reports host failures instead of an empty list.",
+        "notes": "Anime source with complete dates and broader search. v0.0.5 retries the alternate Mkissa API mirror and other audio variants when an episode is advertised but returns no servers.",
     }
     (ROOT / "index.json").write_text(
         json.dumps([source], indent=2, ensure_ascii=False) + "\n",

@@ -67,7 +67,7 @@ const CDN_BASES = ['https://mkissa.to', 'https://allmanga.to'];
 
 let aaKeyCache = { keys: null, ts: 0 };
 
-if (typeof console !== 'undefined') console.log('allmanga module v1.11.3 (build 175 keygen, k7 episode lane)');
+if (typeof console !== 'undefined') console.log('allmanga module v1.11.4 (build 175 keygen, k7 episode lane)');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -445,7 +445,7 @@ function aaBuildToken(keys, qh, ts, legacyIv) {
     return aaSealToken(keys, qh, ts, legacyIv);
 }
 
-async function aaEpisodeQuery(keys, showId, tt, episode) {
+async function aaEpisodeQuery(keys, showId, tt, episode, hosts) {
     const ts = Math.floor(Date.now() / 300000) * 300000;
     const qh = aaHex(aaSha256(aaAscii(EPISODE_QUERY)));
     const variables = { showId, translationType: tt, episodeString: String(episode) };
@@ -454,10 +454,11 @@ async function aaEpisodeQuery(keys, showId, tt, episode) {
         aaReq: aaBuildToken(keys, qh, ts),
         k: keys.lane
     };
-    console.log('Episode query -> ' + API_URLS.length + ' host(s), episode ' + episode + ', type ' + tt + ', qh ' + qh.slice(0, 8));
+    const hostList = Array.isArray(hosts) && hosts.length ? hosts : API_URLS;
+    console.log('Episode query -> ' + hostList.length + ' host(s), episode ' + episode + ', type ' + tt + ', qh ' + qh.slice(0, 8));
     let rateLimited = false;
-    for (let i = 0; i < API_URLS.length; i++) {
-        const host = API_URLS[i];
+    for (let i = 0; i < hostList.length; i++) {
+        const host = hostList[i];
         let json = await aaSendEpisodeRequest(host, 'GET', null, variables, extensions, keys);
         let errMsg = (json && json.errors && json.errors[0] && json.errors[0].message) || '';
         if (json && !json.data && errMsg.indexOf('PersistedQueryNotFound') === 0) {
@@ -1433,6 +1434,34 @@ async function aaGetEpisodeParsed(showId, episode, translationType) {
             parsed = aaParseEpisodeResponse(json, keys);
         }
     }
+
+    // The two Mkissa API mirrors can briefly disagree after an episode is
+    // uploaded or a server is replaced. A successfully decrypted response
+    // with an empty sourceUrls array is therefore not a final success: ask
+    // the alternate mirror before reporting that the episode has no server.
+    const sources = parsed && parsed.episode && parsed.episode.sourceUrls;
+    if ((!Array.isArray(sources) || !sources.length) && API_URLS.length > 1) {
+        console.log('Episode ' + episode + ' ' + translationType +
+            ' has no servers on the primary mirror; trying alternate mirror');
+        let alternateJson = await aaEpisodeQuery(
+            keys, showId, translationType, String(episode), API_URLS.slice(1)
+        );
+        if (aaIsCryptoStale(alternateJson)) {
+            const alternateKeys = await aaFetchRemoteKeys(keys.lane);
+            if (alternateKeys) {
+                keys = alternateKeys;
+                alternateJson = await aaEpisodeQuery(
+                    keys, showId, translationType, String(episode), API_URLS.slice(1)
+                );
+            }
+        }
+        const alternateParsed = aaParseEpisodeResponse(alternateJson, keys);
+        const alternateSources = alternateParsed && alternateParsed.episode &&
+            alternateParsed.episode.sourceUrls;
+        if (Array.isArray(alternateSources) && alternateSources.length) {
+            return alternateParsed;
+        }
+    }
     return parsed;
 }
 
@@ -1763,8 +1792,13 @@ class DefaultExtension extends MProvider {
             ['raw', 'sub', 'dub']
         ];
         const order = orders[preference] || orders[0];
-        const present = available && available.length ? available : ['sub', 'dub', 'raw'];
-        return order.filter(function(type) { return present.indexOf(type) >= 0; });
+        const present = available && available.length ? available : order;
+        const listed = order.filter(function(type) { return present.indexOf(type) >= 0; });
+        const fallbacks = order.filter(function(type) { return present.indexOf(type) < 0; });
+        // availableEpisodesDetail can be stale while an episode is being
+        // mirrored. Try the advertised audio first, then the remaining audio
+        // variants only if it returns no servers.
+        return listed.concat(fallbacks);
     }
 
     sourceLabel(source) {

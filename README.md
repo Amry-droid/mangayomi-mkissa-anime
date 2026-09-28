@@ -27,6 +27,9 @@ Refresh the extension list, open the Anime extensions section, and install
 
 ## Updates
 
+- `0.0.5`: Fixes episodes that are listed but return no video servers by
+  retrying Mkissa's alternate API mirror, then trying the other audio variants
+  when the catalogue's Sub/Dub/Raw availability is stale.
 - `0.0.4`: Uses Mangayomi's Dart HTTP path for iOS stream hosts and races
   OK.ru against MP4Upload, returning the first working video. If every host is
   unreachable, Mangayomi now shows the attempted hosts instead of the generic
